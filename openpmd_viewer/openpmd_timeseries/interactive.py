@@ -9,7 +9,8 @@ Authors: Remi Lehe, Axel Huebl
 License: 3-Clause-BSD-LBNL
 """
 import math
-from functools import partial
+from functools import partial, wraps
+from threading import RLock
 try:
     from ipywidgets import widgets, __version__
     ipywidgets_version = int(__version__[0])
@@ -56,10 +57,26 @@ class InteractiveViewer(object):
             raise RuntimeError("Failed to load the openPMD-viewer slider.\n"
                 "(Make sure that ipywidgets and matplotlib are installed.)")
 
+        # All slider views for this viewer share a lock. Hold it over the
+        # complete callback, including iteration changes, reads and plotting.
+        # Reentrancy is needed because button callbacks invoke the observer
+        # synchronously when they assign slider.value.
+        if not hasattr(self, '_slider_callback_lock'):
+            self._slider_callback_lock = RLock()
+        callback_lock = self._slider_callback_lock
+
+        def serialized(callback):
+            @wraps(callback)
+            def wrapped(*args, **kwargs):
+                with callback_lock:
+                    return callback(*args, **kwargs)
+            return wrapped
+
         # -----------------------
         # Define useful functions
         # -----------------------
 
+        @serialized
         def refresh_field(change=None, force=False):
             """
             Refresh the current field figure
@@ -126,6 +143,7 @@ class InteractiveViewer(object):
                     slice_across=slice_across,
                     plot_range=plot_range, **kw_fld )
 
+        @serialized
         def refresh_ptcl(change=None, force=False):
             """
             Refresh the current particle figure
@@ -187,6 +205,7 @@ class InteractiveViewer(object):
                         plot_range=plot_range,
                         use_field_mesh=ptcl_use_field_button.value, **kw_ptcl )
 
+        @serialized
         def refresh_field_type(change):
             """
             Refresh the field type and disable the coordinates buttons
@@ -233,6 +252,7 @@ class InteractiveViewer(object):
             # Show the fields
             refresh_field()
 
+        @serialized
         def refresh_species(change=None):
             """
             Refresh the particle species buttons by populating them
@@ -269,6 +289,7 @@ class InteractiveViewer(object):
             # Put back the previous value of the refreshing button
             ptcl_refresh_toggle.value = saved_refresh_value
 
+        @serialized
         def change_iteration(change):
             "Plot the result at the required iteration"
             # Find the closest iteration
@@ -277,6 +298,7 @@ class InteractiveViewer(object):
             refresh_field()
             refresh_ptcl()
 
+        @serialized
         def step_fw(b):
             "Plot the result one iteration further"
             if self._current_i < len(self.t) - 1:
@@ -285,6 +307,7 @@ class InteractiveViewer(object):
                 self.current_iteration = self.iterations[self._current_i]
             slider.value = self.current_iteration
 
+        @serialized
         def step_bw(b):
             "Plot the result one iteration before"
             if self._current_i > 0:
